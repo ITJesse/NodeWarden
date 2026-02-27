@@ -14,3 +14,7 @@ bucket_name = "nodewarden-attachments"
 
 [placement]
 mode = "smart"
+
+[[routes]]
+pattern = "bw.abo.network"
+custom_domain = true
