@@ -1,5 +1,6 @@
 import { Env, DEFAULT_DEV_SECRET } from './types';
 import { AuthService } from './services/auth';
+import { StorageService } from './services/storage';
 import { RateLimitService, getClientIdentifier } from './services/ratelimit';
 import { handleCors, errorResponse, jsonResponse } from './utils/response';
 import { LIMITS } from './config/limits';
