@@ -580,7 +580,7 @@ export function renderRegisterPageHTML(jwtState: JwtSecretState | null): string 
             <div style="height: 10px"></div>
             <div class="field">
               <label for="password" id="t_pw_label">Master password</label>
-              <input type="password" id="password" name="password" required minlength="12" placeholder="At least 12 characters" autocomplete="new-password">
+              <input type="password" id="password" name="password" required minlength="10" placeholder="At least 10 characters" autocomplete="new-password">
               <p class="hint" id="t_pw_hint">Choose a strong password you can remember. The server cannot recover it.</p>
             </div>
 
@@ -776,7 +776,7 @@ export function renderRegisterPageHTML(jwtState: JwtSecretState | null): string 
         keyWaitRefresh: '设置后请刷新',
 
         errPwNotMatch: '两次输入的密码不一致',
-        errPwTooShort: '密码长度至少 12 位',
+        errPwTooShort: '密码长度至少 10 位',
         errGeneric: '发生错误：',
         errRegisterFailed: '注册失败',
       };
@@ -862,7 +862,7 @@ export function renderRegisterPageHTML(jwtState: JwtSecretState | null): string 
         keyWaitRefresh: 'After setting it, refresh this page',
 
         errPwNotMatch: 'Passwords do not match',
-        errPwTooShort: 'Password must be at least 12 characters',
+        errPwTooShort: 'Password must be at least 10 characters',
         errGeneric: 'An error occurred: ',
         errRegisterFailed: 'Registration failed',
       };
@@ -1336,7 +1336,7 @@ export function renderRegisterPageHTML(jwtState: JwtSecretState | null): string 
         showMessage(t('errPwNotMatch'), 'error');
         return;
       }
-      if (password.length < 12) {
+      if (password.length < 10) {
         showMessage(t('errPwTooShort'), 'error');
         return;
       }
