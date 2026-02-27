@@ -168,6 +168,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     // Setup page (root)
     if (path === '/' && method === 'GET') {
+      const storage = new StorageService(env.DB);
+      const registered = await storage.isRegistered();
+      if (registered) {
+        return errorResponse('Not found', 404);
+      }
       return handleSetupPage(request, env);
     }
 
