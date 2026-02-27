@@ -11,3 +11,6 @@ database_name = "nodewarden-db"
 [[r2_buckets]]
 binding = "ATTACHMENTS"
 bucket_name = "nodewarden-attachments"
+
+[placement]
+mode = "smart"
