@@ -7,6 +7,7 @@ node_modules/
 wrangler.my.toml
 RELEASE_NOTES.md
 tests/selfcheck.ts
+problem.md
 
 # Build output
 dist/
@@ -36,3 +37,8 @@ npm-debug.log*
 
 # Package lock (optional - remove if you want to commit it)
 # package-lock.json
+
+tmp/
+.tmp/
+
+nodewarden.wiki/

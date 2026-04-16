@@ -1,10 +1,20 @@
 // Environment bindings
 export interface Env {
   DB: D1Database;
-  ATTACHMENTS: R2Bucket;
+  NOTIFICATIONS_HUB: DurableObjectNamespace;
+  ASSETS?: {
+    fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+  };
+  // Prefer R2 when available. Optional to support KV-only deployments.
+  ATTACHMENTS?: R2Bucket;
+  // Optional fallback for attachment/send file storage (no credit card required).
+  ATTACHMENTS_KV?: KVNamespace;
   JWT_SECRET: string;
   TOTP_SECRET?: string;
 }
+
+export type UserRole = 'admin' | 'user';
+export type UserStatus = 'active' | 'banned';
 
 // Sample JWT secret used by `.dev.vars.example`.
 // If runtime JWT_SECRET equals this value, treat it as unsafe.
@@ -25,6 +35,7 @@ export interface User {
   id: string;
   email: string;
   name: string | null;
+  masterPasswordHint: string | null;
   masterPasswordHash: string;
   key: string;
   privateKey: string | null;
@@ -34,8 +45,33 @@ export interface User {
   kdfMemory?: number;
   kdfParallelism?: number;
   securityStamp: string;
+  role: UserRole;
+  status: UserStatus;
+  verifyDevices?: boolean;
+  totpSecret: string | null;
+  totpRecoveryCode: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Invite {
+  code: string;
+  createdBy: string;
+  usedBy: string | null;
+  expiresAt: string;
+  status: 'active' | 'used' | 'revoked' | 'expired';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuditLog {
+  id: string;
+  actorUserId: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  metadata: string | null;
+  createdAt: string;
 }
 
 // Cipher types
@@ -134,6 +170,7 @@ export interface Cipher {
   key: string | null;
   createdAt: string;
   updatedAt: string;
+  archivedAt: string | null;
   deletedAt: string | null;
   /** Allow unknown fields from Bitwarden clients to be stored and passed through transparently. */
   [key: string]: any;
@@ -153,8 +190,115 @@ export interface Device {
   deviceIdentifier: string;
   name: string;
   type: number;
+  sessionStamp: string;
+  encryptedUserKey: string | null;
+  encryptedPublicKey: string | null;
+  encryptedPrivateKey: string | null;
+  devicePendingAuthRequest?: DevicePendingAuthRequest | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface DevicePendingAuthRequest {
+  id: string;
+  creationDate: string;
+}
+
+export interface DeviceResponse {
+  id: string;
+  userId?: string | null;
+  name: string;
+  identifier: string;
+  type: number;
+  creationDate: string;
+  revisionDate: string;
+  isTrusted: boolean;
+  encryptedUserKey: string | null;
+  encryptedPublicKey: string | null;
+  devicePendingAuthRequest: DevicePendingAuthRequest | null;
+  object: string;
+  [key: string]: any;
+}
+
+export interface ProtectedDeviceResponse {
+  id: string;
+  name: string;
+  identifier: string;
+  type: number;
+  creationDate: string;
+  encryptedUserKey: string | null;
+  encryptedPublicKey: string | null;
+  object: string;
+  [key: string]: any;
+}
+
+export interface RefreshTokenRecord {
+  userId: string;
+  expiresAt: number;
+  deviceIdentifier: string | null;
+  deviceSessionStamp: string | null;
+}
+
+export interface TrustedDeviceTokenSummary {
+  deviceIdentifier: string;
+  expiresAt: number;
+  tokenCount: number;
+}
+
+export enum SendType {
+  Text = 0,
+  File = 1,
+}
+
+export enum SendAuthType {
+  Email = 0,
+  Password = 1,
+  None = 2,
+}
+
+export interface Send {
+  id: string;
+  userId: string;
+  type: SendType;
+  name: string;
+  notes: string | null;
+  data: string;
+  key: string;
+  passwordHash: string | null;
+  passwordSalt: string | null;
+  passwordIterations: number | null;
+  authType: SendAuthType;
+  emails: string | null;
+  maxAccessCount: number | null;
+  accessCount: number;
+  disabled: boolean;
+  hideEmail: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+  expirationDate: string | null;
+  deletionDate: string;
+}
+
+export interface SendResponse {
+  id: string;
+  accessId: string;
+  type: number;
+  name: string;
+  notes: string | null;
+  text: any | null;
+  file: any | null;
+  key: string;
+  maxAccessCount: number | null;
+  accessCount: number;
+  password: string | null;
+  emails: string | null;
+  authType: SendAuthType;
+  disabled: boolean;
+  hideEmail: boolean | null;
+  revisionDate: string;
+  expirationDate: string | null;
+  deletionDate: string;
+  object: string;
 }
 
 // JWT Payload
@@ -165,6 +309,8 @@ export interface JWTPayload {
   email_verified: boolean; // required by mobile client
   amr: string[];    // authentication methods reference - required by mobile client
   sstamp: string;   // security stamp - invalidates token when user changes password
+  did?: string;     // device identifier - invalidates per-device sessions
+  dstamp?: string;  // device session stamp
   iat: number;
   exp: number;
   iss: string;
@@ -192,6 +338,8 @@ export interface UserDecryptionOptions {
   Object: string;
   // Bitwarden Android 2026.1.x expects this to exist; missing it breaks unlock when the vault is empty.
   MasterPasswordUnlock: MasterPasswordUnlock;
+  TrustedDeviceOption: null;
+  KeyConnectorOption: null;
 }
 
 // API Response types
@@ -199,7 +347,8 @@ export interface TokenResponse {
   access_token: string;
   expires_in: number;
   token_type: string;
-  refresh_token: string;
+  refresh_token?: string;
+  web_session?: boolean;
   TwoFactorToken?: string;
   Key: string;
   PrivateKey: string | null;
@@ -211,7 +360,18 @@ export interface TokenResponse {
   ResetMasterPassword: boolean;
   scope: string;
   unofficialServer: boolean;
+  MasterPasswordPolicy?: {
+    Object: string;
+  } | null;
+  ApiUseKeyConnector?: boolean;
+  AccountKeys?: any | null;
+  accountKeys?: any | null;
   UserDecryptionOptions: UserDecryptionOptions;
+  userDecryptionOptions?: UserDecryptionOptions;
+  VaultKeys?: {
+    symEncKey: string;
+    symMacKey: string;
+  };
 }
 
 export interface ProfileResponse {
@@ -235,6 +395,9 @@ export interface ProfileResponse {
   forcePasswordReset: boolean;
   avatarColor: string | null;
   creationDate: string;
+  verifyDevices?: boolean;
+  role?: UserRole;
+  status?: UserStatus;
   object: string;
 }
 
@@ -290,7 +453,14 @@ export interface SyncResponse {
   ciphers: CipherResponse[];
   domains: any;
   policies: any[];
-  sends: any[];
+  sends: SendResponse[];
+  UserDecryption?: {
+    MasterPasswordUnlock: MasterPasswordUnlock | null;
+    TrustedDeviceOption?: null;
+    KeyConnectorOption?: null;
+    WebAuthnPrfOption?: null;
+    Object?: string;
+  } | null;
   // PascalCase for desktop/browser clients
   UserDecryptionOptions: UserDecryptionOptions | null;
   // camelCase for Android client (SyncResponseJson uses @SerialName("userDecryption"))

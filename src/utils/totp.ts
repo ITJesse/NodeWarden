@@ -3,7 +3,16 @@ const TOTP_DIGITS = 6;
 const TOTP_WINDOW = 1; // allow previous/current/next step for small clock drift
 
 function normalizeBase32(input: string): string {
-  return input.toUpperCase().replace(/[\s-]/g, '').replace(/=+$/g, '');
+  const raw = String(input || '').toUpperCase();
+  let out = '';
+  for (const char of raw) {
+    if (char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '-') continue;
+    out += char;
+  }
+  while (out.endsWith('=')) {
+    out = out.slice(0, -1);
+  }
+  return out;
 }
 
 function base32Decode(input: string): Uint8Array | null {
@@ -69,11 +78,19 @@ export async function verifyTotpToken(secretRaw: string, tokenRaw: string, nowMs
   if (!secret) return false;
 
   const currentCounter = Math.floor(nowMs / 1000 / TOTP_STEP_SECONDS);
+  let matched = false;
   for (let delta = -TOTP_WINDOW; delta <= TOTP_WINDOW; delta++) {
     const expected = await hotp(secret, currentCounter + delta);
-    if (expected === token) return true;
+    // Constant-time comparison: always check all windows, never short-circuit.
+    const a = new TextEncoder().encode(expected);
+    const b = new TextEncoder().encode(token);
+    let diff = a.length ^ b.length;
+    for (let i = 0; i < a.length && i < b.length; i++) {
+      diff |= a[i] ^ b[i];
+    }
+    if (diff === 0) matched = true;
   }
-  return false;
+  return matched;
 }
 
 export function isTotpEnabled(secretRaw: string | undefined | null): boolean {
