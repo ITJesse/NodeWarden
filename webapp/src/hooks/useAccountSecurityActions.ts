@@ -108,7 +108,7 @@ export default function useAccountSecurityActions(options: UseAccountSecurityAct
           onNotify('error', t('txt_current_new_password_is_required'));
           return;
         }
-        if (nextPassword.length < 12) {
+        if (nextPassword.length < 10) {
           onNotify('error', t('txt_new_password_must_be_at_least_12_chars'));
           return;
         }

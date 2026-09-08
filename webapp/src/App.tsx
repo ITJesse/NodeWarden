@@ -779,7 +779,7 @@ export default function App() {
       pushToast('error', t('txt_please_input_email_and_password'));
       return;
     }
-    if (registerValues.password.length < 12) {
+    if (registerValues.password.length < 10) {
       pushToast('error', t('txt_master_password_must_be_at_least_12_chars'));
       return;
     }
