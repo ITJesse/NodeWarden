@@ -18,6 +18,10 @@ import {
   getUserCount as countStoredUsers,
   saveUser as saveStoredUser,
   upgradePasswordVerifier as upgradeStoredPasswordVerifier,
+  setUserKeyIdIfUnset as setStoredUserKeyIdIfUnset,
+  setUserKeyId as setStoredUserKeyId,
+  updateMasterPasswordKdf as updateStoredMasterPasswordKdf,
+  type MasterPasswordKdfUpdate,
 } from './storage-user-repo';
 import {
   type AuditLogListOptions,
@@ -166,7 +170,7 @@ const STORAGE_SCHEMA_VERSION_KEY = 'schema.version';
 // Bump this whenever src/services/storage-schema.ts or migrations/0001_init.sql
 // changes. Existing D1 installs only rerun ensureStorageSchema() when this value
 // differs from config.schema.version.
-const STORAGE_SCHEMA_VERSION = '2026-07-13-refresh-session-reuse';
+const STORAGE_SCHEMA_VERSION = '2026-11-01-user-key-id';
 const REQUIRED_SCHEMA_TABLES = ['webauthn_credentials', 'webauthn_challenges', 'auth_requests', 'totp_login_replays'] as const;
 
 // D1-backed storage.
@@ -317,6 +321,19 @@ export class StorageService {
 
   async upgradePasswordVerifier(userId: string, expectedVerifier: string, securityStamp: string, newVerifier: string): Promise<boolean> {
     return upgradeStoredPasswordVerifier(this.db, userId, expectedVerifier, securityStamp, newVerifier);
+  }
+
+  // Records the user key id only when none is stored yet. Returns false if one already exists.
+  async setUserKeyIdIfUnset(userId: string, userKeyId: string): Promise<boolean> {
+    return setStoredUserKeyIdIfUnset(this.db, userId, userKeyId);
+  }
+
+  async setUserKeyId(userId: string, userKeyId: string | null): Promise<void> {
+    await setStoredUserKeyId(this.db, userId, userKeyId);
+  }
+
+  async updateMasterPasswordKdf(userId: string, expectedVerifier: string, securityStamp: string, update: MasterPasswordKdfUpdate): Promise<boolean> {
+    return updateStoredMasterPasswordKdf(this.db, userId, expectedVerifier, securityStamp, update);
   }
 
   async createFirstUser(user: User): Promise<boolean> {

@@ -304,6 +304,7 @@ async function importPreparedBackupRows(db: D1Database, payload: BackupPayload['
       ...row,
       verify_devices: row.verify_devices ?? 0,
       yubikey_nfc: row.yubikey_nfc ?? 0,
+      user_key_id: row.user_key_id ?? null,
     })),
     domain_settings: cloneRows(payload.domain_settings || []),
     user_revisions: cloneRows(payload.user_revisions || []),
@@ -639,7 +640,7 @@ async function importBackupRows(db: D1Database, payload: BackupPayload['db'], us
     buildInsertStatements(
       db,
       tableName('users'),
-      ['id', 'email', 'name', 'master_password_hint', 'master_password_hash', 'key', 'private_key', 'public_key', 'kdf_type', 'kdf_iterations', 'kdf_memory', 'kdf_parallelism', 'security_stamp', 'role', 'status', 'verify_devices', 'totp_secret', 'totp_recovery_code', 'yubikey_key1', 'yubikey_key2', 'yubikey_key3', 'yubikey_key4', 'yubikey_key5', 'yubikey_nfc', 'created_at', 'updated_at'],
+      ['id', 'email', 'name', 'master_password_hint', 'master_password_hash', 'key', 'private_key', 'public_key', 'kdf_type', 'kdf_iterations', 'kdf_memory', 'kdf_parallelism', 'security_stamp', 'role', 'status', 'verify_devices', 'totp_secret', 'totp_recovery_code', 'yubikey_key1', 'yubikey_key2', 'yubikey_key3', 'yubikey_key4', 'yubikey_key5', 'yubikey_nfc', 'user_key_id', 'created_at', 'updated_at'],
       payload.users || []
     )
   );

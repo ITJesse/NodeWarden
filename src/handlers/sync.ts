@@ -135,6 +135,8 @@ export async function handleSync(request: Request, env: Env, userId: string): Pr
       WebAuthnPrfOption: webAuthnPrfOptions[0] || null,
       WebAuthnPrfOptions: webAuthnPrfOptions,
       V2UpgradeToken: null,
+      // Omitted until recorded, so clients run the key-management backfill.
+      ...(user.userKeyId ? { UserKeyId: user.userKeyId } : {}),
       Object: 'userDecryption',
     },
     UserDecryptionOptions: userDecryptionOptions,

@@ -60,6 +60,8 @@ export interface User {
   yubikeyKey5: string | null;
   yubikeyNfc: boolean;
   apiKey: string | null;
+  // Hex key id of the current user key, recorded via the key-management backfill.
+  userKeyId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -658,6 +660,7 @@ export interface SyncResponse {
       WrappedUserKey1: string;
       WrappedUserKey2: string;
     } | null;
+    UserKeyId?: string;
     Object?: string;
   } | null;
   // PascalCase for desktop/browser clients

@@ -11,6 +11,8 @@ import { findMatchingTotpCounter, isTotpEnabled } from '../utils/totp';
 import { createRecoveryCode, recoveryCodeEquals } from '../utils/recovery-code';
 import { buildAccountKeys } from '../utils/user-decryption';
 import { buildProfileResponse } from '../utils/profile-response';
+import { readActingDeviceIdentifier } from '../utils/device';
+import { notifyUserVaultSync } from '../durable/notifications-hub';
 import { isYubiKeyEnabled, isYubiKeyPublicId, requestYubicoApiCredentials, verifyYubicoOtp, yubiKeyPublicIdFromOtp } from '../utils/yubico-otp';
 import {
   getYubicoCredentials,
@@ -206,6 +208,27 @@ function readNestedNumber(source: unknown, path: string[]): number | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Bitwarden key ids are 16 bytes, hex encoded in lowercase (server KeyId.FromHexEncodedString).
+function isKeyId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
+}
+
+// Mirrors the official KdfSettingsValidator / KdfConstants ranges used when
+// clients change KDF settings.
+function validateKdfChangeSettings(kdfType: number, iterations: number, memory: number | null, parallelism: number | null): string | null {
+  if (kdfType === 0) {
+    if (iterations < 600_000 || iterations > 2_000_000) return 'KDF iterations must be between 600000 and 2000000.';
+    return null;
+  }
+  if (kdfType === 1) {
+    if (iterations < 2 || iterations > 10) return 'Argon2 iterations must be between 2 and 10.';
+    if (memory === null || memory < 15 || memory > 1024) return 'Argon2 memory must be between 15mb and 1024mb.';
+    if (parallelism === null || parallelism < 1 || parallelism > 16) return 'Argon2 parallelism must be between 1 and 16.';
+    return null;
+  }
+  return 'KDF type must be PBKDF2-SHA256 or Argon2id';
 }
 
 async function readRequestBody(request: Request): Promise<Record<string, unknown>> {
@@ -592,6 +615,7 @@ export async function handleSetKeys(request: Request, env: Env, userId: string):
     key?: string;
     encryptedPrivateKey?: string;
     publicKey?: string;
+    userKeyId?: string | null;
   };
 
   try {
@@ -615,6 +639,14 @@ export async function handleSetKeys(request: Request, env: Env, userId: string):
   if (body.encryptedPrivateKey && !looksLikeEncString(body.encryptedPrivateKey)) {
     return errorResponse('encryptedPrivateKey is not a valid encrypted string', 400);
   }
+  if (body.userKeyId != null && !isKeyId(body.userKeyId)) {
+    return errorResponse('UserKeyId is not a valid key id.', 400);
+  }
+
+  // A replaced user key invalidates the recorded key id; clients that predate
+  // the field pick a new one up through the key-management backfill.
+  const userKeyChanged = !!body.key && body.key !== user.key;
+  const nextUserKeyId = body.userKeyId ?? null;
 
   if (body.key) user.key = body.key;
   if (body.encryptedPrivateKey) user.privateKey = body.encryptedPrivateKey;
@@ -622,6 +654,12 @@ export async function handleSetKeys(request: Request, env: Env, userId: string):
   user.updatedAt = new Date().toISOString();
 
   await storage.saveUser(user);
+  if (userKeyChanged) {
+    await storage.setUserKeyId(user.id, nextUserKeyId);
+    user.userKeyId = nextUserKeyId;
+  } else if (nextUserKeyId && await storage.setUserKeyIdIfUnset(user.id, nextUserKeyId)) {
+    user.userKeyId = nextUserKeyId;
+  }
   await writeAuditEvent(storage, {
     actorUserId: user.id,
     action: 'account.keys.update',
@@ -638,6 +676,155 @@ export async function handleSetKeys(request: Request, env: Env, userId: string):
   });
 
   return jsonResponse(keysResponse(user));
+}
+
+// POST /api/accounts/key-management/user-key-id
+// Records the id of the user's current user key for accounts created before
+// clients reported it. Only the id leaves the client, never key material.
+export async function handleSetUserKeyId(request: Request, env: Env, userId: string): Promise<Response> {
+  const storage = new StorageService(env.DB);
+  const user = await storage.getUserById(userId);
+  if (!user) return errorResponse('User not found', 404);
+
+  let body: { userKeyId?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+  if (!isKeyId(body?.userKeyId)) {
+    return errorResponse('UserKeyId is not a valid key id.', 400);
+  }
+
+  if (!(await storage.setUserKeyIdIfUnset(user.id, body.userKeyId))) {
+    return errorResponse('User key id is already set.', 400);
+  }
+  // The key id is part of the sync response; move the revision so cached
+  // sync responses are not served without it.
+  await storage.updateRevisionDate(user.id);
+  await writeAuditEvent(storage, {
+    actorUserId: user.id,
+    action: 'account.user_key_id.set',
+    category: 'security',
+    level: 'info',
+    targetType: 'user',
+    targetId: user.id,
+    metadata: { userKeyId: body.userKeyId, ...auditRequestMetadata(request) },
+  });
+
+  return new Response(null, { status: 200 });
+}
+
+// POST /api/accounts/kdf
+// Bitwarden clients raise outdated PBKDF2 iteration counts with this endpoint
+// (CLI/desktop encrypted migrations run it right after login or unlock).
+// Like the official server, the security stamp is kept: the client that
+// performed the change keeps its session and re-syncs immediately, while other
+// clients pick up the new KDF settings from their next sync.
+export async function handleChangeKdf(request: Request, env: Env, userId: string): Promise<Response> {
+  const storage = new StorageService(env.DB);
+  const auth = new AuthService(env);
+  const user = await storage.getUserById(userId);
+  if (!user) return errorResponse('User not found', 404);
+
+  let body: {
+    masterPasswordHash?: string;
+    authenticationData?: Record<string, unknown>;
+    unlockData?: Record<string, unknown>;
+  };
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+
+  if (!body?.masterPasswordHash) return errorResponse('masterPasswordHash is required', 400);
+  if (!isRecord(body.authenticationData) || !isRecord(body.unlockData)) {
+    return errorResponse('authenticationData and unlockData are required', 400);
+  }
+  const valid = await auth.verifyPassword(body.masterPasswordHash, user.masterPasswordHash, user.email);
+  if (!valid) return errorResponse('Invalid password', 400);
+
+  const newMasterPasswordHash = readNestedString(body, ['authenticationData', 'masterPasswordAuthenticationHash']).trim();
+  const nextKey = readNestedString(body, ['unlockData', 'masterKeyWrappedUserKey']).trim();
+  if (!newMasterPasswordHash || !nextKey) {
+    return errorResponse('authenticationData and unlockData are incomplete', 400);
+  }
+  if (!looksLikeEncString(nextKey)) {
+    return errorResponse('masterKeyWrappedUserKey is not a valid encrypted string', 400);
+  }
+
+  const authSalt = readNestedString(body, ['authenticationData', 'salt']);
+  const unlockSalt = readNestedString(body, ['unlockData', 'salt']);
+  if (!authSalt.trim() || !unlockSalt.trim()) {
+    return errorResponse('Master password salt must not be empty.', 400);
+  }
+
+  const kdfType = readNestedNumber(body, ['authenticationData', 'kdf', 'kdfType']);
+  const iterations = readNestedNumber(body, ['authenticationData', 'kdf', 'iterations']);
+  const memory = readNestedNumber(body, ['authenticationData', 'kdf', 'memory']) ?? null;
+  const parallelism = readNestedNumber(body, ['authenticationData', 'kdf', 'parallelism']) ?? null;
+  const unlockKdfType = readNestedNumber(body, ['unlockData', 'kdf', 'kdfType']);
+  const unlockIterations = readNestedNumber(body, ['unlockData', 'kdf', 'iterations']);
+  const unlockMemory = readNestedNumber(body, ['unlockData', 'kdf', 'memory']) ?? null;
+  const unlockParallelism = readNestedNumber(body, ['unlockData', 'kdf', 'parallelism']) ?? null;
+  if (kdfType === undefined || iterations === undefined || unlockKdfType === undefined || unlockIterations === undefined) {
+    return errorResponse('authenticationData and unlockData must include KDF settings', 400);
+  }
+  if (kdfType !== unlockKdfType || iterations !== unlockIterations || memory !== unlockMemory || parallelism !== unlockParallelism) {
+    return errorResponse('AuthenticationData and UnlockData must have the same KDF configuration.', 400);
+  }
+  // The salt is derived from the email; a changed salt would make the account undecryptable.
+  if (authSalt !== unlockSalt || authSalt !== user.email.trim().toLowerCase()) {
+    return errorResponse('Invalid master password salt.', 400);
+  }
+  const kdfError = validateKdfChangeSettings(kdfType, iterations, memory, parallelism);
+  if (kdfError) return errorResponse(kdfError, 400);
+
+  const containedKeyId = (body.unlockData as Record<string, unknown>).containedKeyId;
+  if (containedKeyId != null) {
+    if (!isKeyId(containedKeyId)) return errorResponse('ContainedKeyId is not a valid key id.', 400);
+    if (user.userKeyId && user.userKeyId !== containedKeyId) {
+      return errorResponse('Invalid user key sent in in master-password unlock data.', 400);
+    }
+  }
+
+  const nextKdfMemory = kdfType === 1 ? memory : null;
+  const nextKdfParallelism = kdfType === 1 ? parallelism : null;
+  const updated = await storage.updateMasterPasswordKdf(user.id, user.masterPasswordHash, user.securityStamp, {
+    masterPasswordHash: await auth.hashPasswordServer(newMasterPasswordHash),
+    key: nextKey,
+    kdfType,
+    kdfIterations: iterations,
+    kdfMemory: nextKdfMemory,
+    kdfParallelism: nextKdfParallelism,
+    updatedAt: new Date().toISOString(),
+  });
+  if (!updated) {
+    return errorResponse('Account was changed concurrently. Please try again.', 409);
+  }
+  AuthService.invalidateUserCache(user.id);
+  const revisionDate = await storage.updateRevisionDate(user.id);
+  notifyUserVaultSync(env, user.id, revisionDate, readActingDeviceIdentifier(request));
+  await writeAuditEvent(storage, {
+    actorUserId: user.id,
+    action: 'account.kdf.change',
+    category: 'security',
+    level: 'security',
+    targetType: 'user',
+    targetId: user.id,
+    metadata: {
+      previousKdfType: user.kdfType,
+      previousKdfIterations: user.kdfIterations,
+      kdfType,
+      kdfIterations: iterations,
+      kdfMemory: nextKdfMemory,
+      kdfParallelism: nextKdfParallelism,
+      ...auditRequestMetadata(request),
+    },
+  });
+
+  return new Response(null, { status: 200 });
 }
 
 // POST/PUT /api/accounts/password
@@ -725,6 +912,10 @@ export async function handleChangePassword(request: Request, env: Env, userId: s
     }
     if (!authSalt || authSalt !== unlockSalt || authSalt !== expectedSalt) {
       return errorResponse('Invalid master password salt', 400);
+    }
+    const containedKeyId = (body.unlockData as Record<string, unknown>).containedKeyId;
+    if (containedKeyId != null && (!isKeyId(containedKeyId) || (user.userKeyId && user.userKeyId !== containedKeyId))) {
+      return errorResponse('Invalid user key sent in in master-password unlock data.', 400);
     }
     if (
       authKdf !== user.kdfType ||

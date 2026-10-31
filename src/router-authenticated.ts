@@ -5,6 +5,8 @@ import {
   handleUpdateProfile,
   handleGetKeys,
   handleSetKeys,
+  handleSetUserKeyId,
+  handleChangeKdf,
   handleGetRevisionDate,
   handleVerifyPassword,
   handleChangePassword,
@@ -118,7 +120,12 @@ export async function handleAuthenticatedRoute(
   }
 
   if ((path === '/api/accounts/kdf' || path === '/accounts/kdf') && (method === 'POST' || method === 'PUT')) {
-    return unsupportedResponse('KDF changes are not supported by this server.');
+    return handleChangeKdf(request, env, userId);
+  }
+
+  if (path === '/api/accounts/key-management/user-key-id') {
+    if (method === 'POST') return handleSetUserKeyId(request, env, userId);
+    return errorResponse('Method not allowed', 405);
   }
 
   const mailBackedAccountPaths = new Set([
